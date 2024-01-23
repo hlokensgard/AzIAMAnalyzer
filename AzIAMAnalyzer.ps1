@@ -144,10 +144,10 @@ function Get-UsersBasedOnActivity {
     )
     $usersNotInUse = @()
     $usersInUse = @()
-    $userNotInUse = $false
     $infoHashTable.GetEnumerator() | ForEach-Object {
         $user = $_.Key
         $directoryRoles = @()
+        $userNotInUse = $false
         $_.value | ForEach-Object {
             $userActivity = $_.UserActivity
             if (-not $userActivity) {
