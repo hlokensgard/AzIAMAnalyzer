@@ -176,6 +176,48 @@ function Get-UsersBasedOnActivity {
     }
 }
 
+function Get-GraphAPIResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$URI
+    )
+    $result = Invoke-AzRestMethod -Method Get -Uri $URI
+
+    if ($result.StatusCode -eq 200) {
+        return $result
+    }
+    elseif ($result.Content) {
+        $Content = $result.Content | ConvertFrom-Json
+        Write-Error $Content.error.message
+    }
+}
+
+function Get-RolePermissions{
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RoleTemplateId
+    )
+    $uri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions/$($RoleTemplateId)"
+    $graphApiQuery = Get-GraphAPIResult -URI $uri
+    $result = ($graphApiQuery.Content | ConvertFrom-Json | Select-Object -ExpandProperty rolePermissions).allowedResourceActions
+    return $result
+}
+
+function Get-AllDirectoryRolesPermissions{
+    $directoryRoles = Get-DirectoryRoles
+    $listOverDirectoryRoles = @()
+    $directoryRoles | ForEach-Object {
+        $listOverDirectoryRoles += [PSCustomObject]@{
+            RoleTemplateId = $_.roleTemplateId
+            ID = $_.id
+            DisplayName = $_.displayName
+            Permissions = Get-RolePermissions -RoleTemplateId $_.roleTemplateId
+        }
+    }
+    return $listOverDirectoryRoles
+}
+
+
 function Invoke-EntraIdPrivilegedRoleReport {
     param(
         [Parameter(Mandatory = $true)]
@@ -239,3 +281,13 @@ function Invoke-EntraIdPrivilegedRoleReport {
         Write-Output ""
     }
 }
+
+$t = Get-AllDirectoryRolesPermissions
+$t
+
+
+# Finne alternativer 
+# Hent ut alle actions som ligger i alle rolle
+# Hent ut alle actions som er gjort av bruker 
+# Finn alle roller som brukeren kan ha som tilfredstiller aktiviteten han/hun gjør 
+# List opp alle rollene per bruker  
