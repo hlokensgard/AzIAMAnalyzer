@@ -98,7 +98,21 @@ function Get-QueryResultFromLogAnalyticsWorkspace {
     return $results
 }
 
-function Get-Query {
+function Get-ActionListBasedOnActivityForUser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$User
+    )
+    $query = @"
+AzureActivity
+| where Caller == '$($User)'
+| where TimeGenerated > ago(90d)
+| summarize ActionList = make_set(OperationNameValue) by Caller
+"@
+    return $query
+}
+
+function Get-InformationAboutUsersDirectoryRoleQuery {
     param(
         [Parameter(Mandatory = $true)]
         [string]$User,
@@ -197,7 +211,6 @@ function Get-AllDirectoryRolesPermissions{
     return $listOverDirectoryRoles
 }
 
-
 function Invoke-EntraIdPrivilegedRoleReport {
     param(
         [Parameter(Mandatory = $true)]
@@ -224,7 +237,7 @@ function Invoke-EntraIdPrivilegedRoleReport {
     $usersWithPrivilegedRoles | ForEach-Object {
         $directoryRole = $_.directoryRole
         $_.users | ForEach-Object {
-            $query = Get-Query -User $_.userPrincipalName -DirectoryRoleID $directoryRole.id
+            $query = Get-InformationAboutUsersDirectoryRoleQuery -User $_.userPrincipalName -DirectoryRoleID $directoryRole.id
             $queryResults = Get-QueryResultFromLogAnalyticsWorkspace -WorkspaceId $WorkspaceId -LogAnalyticsWorkspaceSubscriptionID $LogAnalyticsWorkspaceSubscriptionID -Query $query
 
             # If the user has not done any actions that last 90 days
@@ -263,12 +276,39 @@ function Invoke-EntraIdPrivilegedRoleReport {
 }
 
 
-<# $t = Get-AllDirectoryRolesPermissions
-$t #>
+function Invoke-ActivityAnalyser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$WorkspaceId,
+        [Parameter(Mandatory = $true)]
+        [string]$LogAnalyticsWorkspaceSubscriptionID
+    )
+    # Get all the users 
+    $usersWithDirectDirectoryRoles = Get-AllUsersWithDirectDirectoryRoles
+    $directoryRolePermissions = Get-AllDirectoryRolesPermissions
+    $info = @()
+
+    $usersWithDirectDirectoryRoles | ForEach-Object {
+        $_.users | ForEach-Object {
+            $activityLogQuery = Get-ActionListBasedOnActivityForUser -User $_.userPrincipalName
+            $queryResult = Get-QueryResultFromLogAnalyticsWorkspace -WorkspaceId $WorkspaceId -LogAnalyticsWorkspaceSubscriptionID $LogAnalyticsWorkspaceSubscriptionID -Query $activityLogQuery
+            if ($null -eq $queryResult) {
+                Write-Verbose "No actions done by the user: $($_.userPrincipalName) in the last 90 days"
+            }
+            else {
+                $info += [PSCustomObject]@{
+                    User          = $_.userPrincipalName
+                    UserActivity  = $queryResult.ActionList
+                }
+            }
+        }
+    }
+    # Need to remove duplicates from the info list 
+    Write-Output "Retreived all the actions done by the users with direcoty roles in the last 90 days"
 
 
-# Finne alternativer 
-# Hent ut alle actions som ligger i alle rolle
-# Hent ut alle actions som er gjort av bruker 
-# Finn alle roller som brukeren kan ha som tilfredstiller aktiviteten han/hun gjør 
-# List opp alle rollene per bruker  
+    # Idenfity actions that are in the directory roles
+    # Remove all the actions that are not part of the directory roles
+    # Create list over all roles that have the actions that the user has done
+    # Create list over the roles 
+}
