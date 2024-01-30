@@ -1,14 +1,23 @@
-function Get-DirectoryRoles {
-    $directoryRoles = Invoke-AzRestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/directoryRoles"
+function Get-GraphAPIResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$URI
+    )
+    $result = Invoke-AzRestMethod -Method Get -Uri $URI
 
-    if ($directoryRoles.StatusCode -eq 200) {
-        $directoryRoles = $directoryRoles.Content | ConvertFrom-Json | Select-Object -ExpandProperty value 
-        return $directoryRoles
+    if ($result.StatusCode -eq 200) {
+        return $result
     }
-    elseif ($directoryRoles.Content) {
-        $Content = $directoryRoles.Content | ConvertFrom-Json
+    elseif ($result.Content) {
+        $Content = $result.Content | ConvertFrom-Json
         Write-Error $Content.error.message
     }
+}
+
+function Get-DirectoryRoles {
+    $uri = "https://graph.microsoft.com/v1.0/directoryRoles"
+    $directoryRoles = (Get-GraphAPIResult -URI $uri).Content | ConvertFrom-Json | Select-Object -ExpandProperty value 
+    return $directoryRoles
 }
 
 function Get-DirectoryRoleMembers {
@@ -16,16 +25,9 @@ function Get-DirectoryRoleMembers {
         [Parameter(Mandatory = $true)]
         [string]$DirectoryRoleID
     )
-    $directoryRoleMembers = Invoke-AzRestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/directoryRoles/$DirectoryRoleID/members"
-
-    if ($directoryRoleMembers.StatusCode -eq 200) {
-        $directoryRoleMembers = $directoryRoleMembers.Content | ConvertFrom-Json | Select-Object -ExpandProperty value 
-        return $directoryRoleMembers
-    }
-    elseif ($directoryRoleMembers.Content) {
-        $Content = $directoryRoleMembers.Content | ConvertFrom-Json
-        Write-Error $Content.error.message
-    }
+    $uri = "https://graph.microsoft.com/v1.0/directoryRoles/$DirectoryRoleID/members"
+    $directoryRoleMembers = (Get-GraphAPIResult -URI $uri).Content | ConvertFrom-Json | Select-Object -ExpandProperty value 
+    return $directoryRoleMembers
 }
 
 function Get-AllUsersWithDirectDirectoryRoles {
@@ -58,22 +60,16 @@ function Get-AllEntraIdGroupMembersWithDirectoryRoles {
         $directoryRoleMembers = Get-DirectoryRoleMembers -DirectoryRoleID $_.id
         if ($null -ne $directoryRoleMembers -and $directoryRoleMembers.'@odata.type' -eq '#microsoft.graph.group') {
             $directoryRoleMembers | ForEach-Object {
-                $groupMembers = Invoke-AzRestMethod -Method Get -Uri "https://graph.microsoft.com/v1.0/groups/$($_.id)/members"
-                if ($groupMembers.StatusCode -eq 200) {
-                    $groupMembers = $groupMembers.Content | ConvertFrom-Json | Select-Object -ExpandProperty value
-                    if ($null -ne $groupMembers) {
-                        $groupMembers | ForEach-Object {
-                            if ($_.'@odata.type' -eq '#microsoft.graph.user') {
-                                $usersWithPrivilegedRoles += [PSCustomObject]@{
-                                    users         = $groupMembers
-                                    directoryRole = $directoryRole
-                                }
+                $uri = "https://graph.microsoft.com/v1.0/groups/$($_.id)/members"
+                $groupMembers = (Get-GraphAPIResult -URI $uri).Content | ConvertFrom-Json | Select-Object -ExpandProperty value 
+                if ($null -ne $groupMembers) {
+                    $groupMembers | ForEach-Object {
+                        if ($_.'@odata.type' -eq '#microsoft.graph.user') {
+                            $usersWithPrivilegedRoles += [PSCustomObject]@{
+                                users         = $groupMembers
+                                directoryRole = $directoryRole
                             }
                         }
-                    }
-                    elseif ($groupMembers.Content) {
-                        $Content = $groupMembers.Content | ConvertFrom-Json
-                        Write-Error $Content.error.message
                     }
                 }
             }
@@ -176,22 +172,6 @@ function Get-UsersBasedOnActivity {
     }
 }
 
-function Get-GraphAPIResult {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$URI
-    )
-    $result = Invoke-AzRestMethod -Method Get -Uri $URI
-
-    if ($result.StatusCode -eq 200) {
-        return $result
-    }
-    elseif ($result.Content) {
-        $Content = $result.Content | ConvertFrom-Json
-        Write-Error $Content.error.message
-    }
-}
-
 function Get-RolePermissions{
     param(
         [Parameter(Mandatory = $true)]
@@ -282,8 +262,9 @@ function Invoke-EntraIdPrivilegedRoleReport {
     }
 }
 
-$t = Get-AllDirectoryRolesPermissions
-$t
+
+<# $t = Get-AllDirectoryRolesPermissions
+$t #>
 
 
 # Finne alternativer 
