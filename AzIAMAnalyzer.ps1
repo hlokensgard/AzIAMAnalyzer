@@ -1,3 +1,10 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceId,
+    [Parameter(Mandatory = $true)]
+    [string]$LogAnalyticsWorkspaceSubscriptionID
+)
+
 function Get-GraphAPIResult {
     param(
         [Parameter(Mandatory = $true)]
@@ -32,7 +39,7 @@ function Get-DirectoryRoleMembers {
 
 function Get-AllUsersWithDirectDirectoryRoles {
     $directoryRoles = Get-DirectoryRoles
-    $usersWithPrivilegedRoles = @()
+    $usersWithPrivilegedRoles = @{}
     $directoryRoles | ForEach-Object {
         $directoryRole = $_
         $users = Get-DirectoryRoleMembers -DirectoryRoleID $_.id
@@ -40,9 +47,11 @@ function Get-AllUsersWithDirectDirectoryRoles {
         if ($null -ne $users) {
             $users | ForEach-Object {
                 if ($_.'@odata.type' -eq '#microsoft.graph.user') {
-                    $usersWithPrivilegedRoles += [PSCustomObject]@{
-                        users         = $users
-                        directoryRole = $directoryRole
+                    if ($usersWithPrivilegedRoles.ContainsKey($_.userPrincipalName)) {
+                        $usersWithPrivilegedRoles[$_.userPrincipalName] += $directoryRole
+                    }
+                    else {
+                        $usersWithPrivilegedRoles.Add($_.userPrincipalName, @($directoryRole))
                     }
                 }
             }
@@ -112,6 +121,19 @@ AzureActivity
     return $query
 }
 
+function Get-ActionListBasedonAuditLogsForUser {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$User
+    )
+    $query = @"
+AuditLogs 
+| where InitiatedBy.user.userPrincipalName == '$($User)'
+| summarize Operation = make_set(OperationName) by tostring(InitiatedBy.user.userPrincipalName)    
+"@
+    return $query
+}
+
 function Get-InformationAboutUsersDirectoryRoleQuery {
     param(
         [Parameter(Mandatory = $true)]
@@ -171,7 +193,7 @@ function Get-UsersBasedOnActivity {
                 DirectoryRole = $directoryRoles
             }
         }
-        else{
+        else {
             $usersInUse += [PSCustomObject]@{
                 User          = $user
                 DirectoryRole = $directoryRoles
@@ -186,7 +208,7 @@ function Get-UsersBasedOnActivity {
     }
 }
 
-function Get-RolePermissions{
+function Get-RolePermissions {
     param(
         [Parameter(Mandatory = $true)]
         [string]$RoleTemplateId
@@ -197,15 +219,15 @@ function Get-RolePermissions{
     return $result
 }
 
-function Get-AllDirectoryRolesPermissions{
+function Get-AllDirectoryRolesPermissions {
     $directoryRoles = Get-DirectoryRoles
     $listOverDirectoryRoles = @()
     $directoryRoles | ForEach-Object {
         $listOverDirectoryRoles += [PSCustomObject]@{
             RoleTemplateId = $_.roleTemplateId
-            ID = $_.id
-            DisplayName = $_.displayName
-            Permissions = Get-RolePermissions -RoleTemplateId $_.roleTemplateId
+            ID             = $_.id
+            DisplayName    = $_.displayName
+            Permissions    = Get-RolePermissions -RoleTemplateId $_.roleTemplateId
         }
     }
     return $listOverDirectoryRoles
@@ -256,7 +278,7 @@ function Invoke-EntraIdPrivilegedRoleReport {
         }
     }
 
-    $infoHashTable = $info | Group-Object -property User, DirectoryRole | ForEach-Object {$_.Group[0] } | Group-Object -Property User -AsHashTable 
+    $infoHashTable = $info | Group-Object -property User, DirectoryRole | ForEach-Object { $_.Group[0] } | Group-Object -Property User -AsHashTable 
 
     Write-Output "People that have no activity logs that last 90 days and have directory roles. These users should be evaluated for removal from the directory roles."
   
@@ -285,30 +307,60 @@ function Invoke-ActivityAnalyser {
     )
     # Get all the users 
     $usersWithDirectDirectoryRoles = Get-AllUsersWithDirectDirectoryRoles
-    $directoryRolePermissions = Get-AllDirectoryRolesPermissions
-    $info = @()
+    
+    $info = @{}
 
-    $usersWithDirectDirectoryRoles | ForEach-Object {
-        $_.users | ForEach-Object {
-            $activityLogQuery = Get-ActionListBasedOnActivityForUser -User $_.userPrincipalName
+    $usersWithDirectDirectoryRoles.GetEnumerator() | ForEach-Object {
+        $_ | ForEach-Object {
+            $activityLogQuery = Get-ActionListBasedOnActivityForUser -User $_.Key
             $queryResult = Get-QueryResultFromLogAnalyticsWorkspace -WorkspaceId $WorkspaceId -LogAnalyticsWorkspaceSubscriptionID $LogAnalyticsWorkspaceSubscriptionID -Query $activityLogQuery
+            
             if ($null -eq $queryResult) {
-                Write-Verbose "No actions done by the user: $($_.userPrincipalName) in the last 90 days"
+                Write-Verbose "No actions done by the user: $($_.Key) in the last 90 days"
             }
             else {
-                $info += [PSCustomObject]@{
-                    User          = $_.userPrincipalName
-                    UserActivity  = $queryResult.ActionList
+                $actionList = $queryResult.ActionList | ConvertFrom-Json
+                if ($_.Key -in $info.Keys) {
+                    $info[$_.Key] += $actionList
                 }
+                else {
+                    $info.Add($_.Key, $actionList)
+                }
+            } 
+        }
+    }
+    Write-Output "Retreived all the actions done by the users with directory roles in the last 90 days"
+
+    Write-Output "Retrieving all the directory roles and their permissions..."
+    $directoryRolePermissions = Get-AllDirectoryRolesPermissions
+    Write-Output " - Retrieved all the directory roles and their permissions"
+
+    # Remove all the actions that are not part of the directory roles from the useractivity
+    # Check if the user has done any actions that are part of the directory roles
+    # This means that we keep the user for futher analysis
+    # If the user has not done any actions that are part of the directory roles we can remove the user from the analysis
+
+    $directoryRolePermissions | ForEach-Object {
+        $usedDirectoryRoleActions = $false
+        $directoryRole = $_.DisplayName
+        $directoryPermissions = $_.Permissions
+        $info | ForEach-Object {
+            $user = $_.Keys
+            $actions = $_.Values
+            $actions | ForEach-Object {
+                if ($directoryPermissions -contains $_) {
+                    $usedDirectoryRoleActions = $true
+                    Write-Output "User: $user has done the action: $_ that is part of the directory role: $directoryRole"
+                }
+            }
+            if (-not $usedDirectoryRoleActions) {
+                Write-Output "User: $user has not done any actions that are part of the directory role: $directoryRole"
             }
         }
     }
-    # Need to remove duplicates from the info list 
-    Write-Output "Retreived all the actions done by the users with direcoty roles in the last 90 days"
 
-
-    # Idenfity actions that are in the directory roles
-    # Remove all the actions that are not part of the directory roles
     # Create list over all roles that have the actions that the user has done
     # Create list over the roles 
 }
+
+Invoke-ActivityAnalyser -WorkspaceId $WorkspaceId -LogAnalyticsWorkspaceSubscriptionID $LogAnalyticsWorkspaceSubscriptionID
